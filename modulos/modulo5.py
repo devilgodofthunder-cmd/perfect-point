@@ -1,6 +1,7 @@
 # modulos/modulo5.py
 import io
 import json
+import os
 import re
 import urllib.parse
 from datetime import datetime, date, timedelta
@@ -39,6 +40,20 @@ ORDEN_MESES_ANIO = [
     "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
     "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"
 ]
+
+
+def _obtener_api_key(db):
+    """Obtiene la API Key de Gemini desde el entorno, secrets o sesión."""
+    key_env = os.getenv("GEMINI_API_KEY", "").strip()
+    if key_env:
+        return key_env
+    try:
+        key_sec = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+        if key_sec:
+            return key_sec
+    except Exception:
+        pass
+    return str(db.get("gemini_api_key", "")).strip()
 
 
 def _normalizar_texto(texto):
@@ -495,7 +510,6 @@ def _calcular_salud_inversion(embudo, costos, es_zae, marca_nombre=""):
             score = 34
             estado = "🔴 Por Encima del Mercado"
 
-        # Ajuste fino por efectividad de cierre en piso vs mercado (15%)
         if tasa_cierre_real >= cierre_mkt * 1.5:
             score = min(score + 5, 98)
         elif 0 < tasa_cierre_real < cierre_mkt * 0.7:
@@ -623,7 +637,6 @@ def _render_medidor_salud(score, estado_txt, justificacion_txt, embudo, costos, 
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Tarjeta de justificación objetiva vs mercado mexicano
     with st.container(border=True):
         st.caption(f"📊 **Justificación vs. Mercado ({bench['sector']})**")
         st.write(justificacion_txt)
@@ -755,12 +768,11 @@ def _render_consultor_ia_resultados(db, marca_activa, mes_sel, embudo, costos, v
     st.markdown(f"### 🧠 Consultor IA de Resultados — {marca_activa} ({mes_sel})")
     st.caption("Pregunta libremente o selecciona una consulta rápida. La IA ya tiene cargados todos tus números reales de este mes y la comparativa del mercado.")
 
-    api_key = db.get("gemini_api_key", "")
+    api_key = _obtener_api_key(db)
     if not api_key:
-        st.warning("⚠️ Ingresa tu **Token IA (Gemini)** en la barra lateral izquierda para activar el consultor inteligente sobre tus resultados.")
+        st.warning("⚠️ El servicio de Inteligencia Artificial no está configurado en el servidor (`GEMINI_API_KEY`).")
         return
 
-    # Botones de diagnóstico en 1 clic
     b1, b2, b3, b4 = st.columns(4)
     prompt_seleccionado = None
 
@@ -780,7 +792,6 @@ def _render_consultor_ia_resultados(db, marca_activa, mes_sel, embudo, costos, v
         else:
             prompt_seleccionado = "Con base en los resultados de este mes y la tendencia histórica, dame un plan de acción práctico de 4 pasos para superar estas metas el próximo mes."
 
-    # Campo para pregunta libre del usuario
     q_col1, q_col2 = st.columns([4.2, 1])
     pregunta_usuario = q_col1.text_input(
         "Haz una pregunta específica sobre tus resultados:",
@@ -798,7 +809,6 @@ def _render_consultor_ia_resultados(db, marca_activa, mes_sel, embudo, costos, v
     clave_sesion_resp = f"resp_ia_resultados_{marca_activa}_{mes_sel}"
 
     if prompt_seleccionado:
-        # Construir paquete de contexto numérico real del mes
         top_ads_txt = "Sin datos de anuncios individuales."
         if contenidos:
             df_c = pd.DataFrame(contenidos).sort_values(by=["Resultados", "Impresiones"], ascending=False)
@@ -830,17 +840,17 @@ def _render_consultor_ia_resultados(db, marca_activa, mes_sel, embudo, costos, v
         Estás asesorando sobre la marca: **{marca_activa}** | Periodo analizado: **{mes_sel}**.
 
         === DATOS REALES DEL PERIODO ===
-        - Alcance: {int(embudo.get('Alcance', 0)):,}
-        - Impresiones: {int(embudo.get('Impresiones', 0)):,}
-        - Resultados / Leads WhatsApp: {int(embudo.get('Resultados (WhatsApp)', 0)):,}
-        - Citas Asistidas: {int(embudo.get('Citas Asistidas', 0)):,}
-        - Ventas Concretadas: {int(embudo.get('Ventas Concretadas', 0)):,}
-        - Inversión Meta Ads: ${costos.get('Inversion', 0):,.2f} MXN
-        - Costo por Lead (CPL): ${costos.get('CPL', 0):,.2f} MXN
-        - Costo por Cita Asistida (CPAC): ${costos.get('CPAC', 0):,.2f} MXN
-        - CAC Publicitario (Por Venta): ${costos.get('CAC', 0):,.2f} MXN
-        - Puntaje de Salud de Inversión: {score_salud}/100
-        - Comparativa vs Mercado Mexicano: {justif_mercado}
+- Alcance: {int(embudo.get('Alcance', 0)):,}
+- Impresiones: {int(embudo.get('Impresiones', 0)):,}
+- Resultados / Leads WhatsApp: {int(embudo.get('Resultados (WhatsApp)', 0)):,}
+- Citas Asistidas: {int(embudo.get('Citas Asistidas', 0)):,}
+- Ventas Concretadas: {int(embudo.get('Ventas Concretadas', 0)):,}
+- Inversión Meta Ads: ${costos.get('Inversion', 0):,.2f} MXN
+- Costo por Lead (CPL): ${costos.get('CPL', 0):,.2f} MXN
+- Costo por Cita Asistida (CPAC): ${costos.get('CPAC', 0):,.2f} MXN
+- CAC Publicitario (Por Venta): ${costos.get('CAC', 0):,.2f} MXN
+- Puntaje de Salud de Inversión: {score_salud}/100
+- Comparativa vs Mercado Mexicano: {justif_mercado}
 
         === RENDIMIENTO DE ANUNCIOS (TOP CONTENIDOS) ===
         {top_ads_txt}
@@ -855,9 +865,9 @@ def _render_consultor_ia_resultados(db, marca_activa, mes_sel, embudo, costos, v
         "{prompt_seleccionado}"
 
         Instrucciones de respuesta:
-        - Responde en español, con tono directo, estratégico, claro y accionable (sin relleno innecesario).
-        - Cita siempre los números reales de la marca para respaldar cada diagnóstico.
-        - Estructura la respuesta con viñetas claras y recomendaciones prácticas inmediatas.
+- Responde en español, con tono directo, estratégico, claro y accionable (sin relleno innecesario).
+- Cita siempre los números reales de la marca para respaldar cada diagnóstico.
+- Estructura la respuesta con viñetas claras y recomendaciones prácticas inmediatas.
         """
 
         try:
@@ -1675,7 +1685,6 @@ def render():
             st.markdown(f"#### 🔥 Contenido Más Efectivo (Cruzado desde `{hoja_2}`)")
             _render_grafica_contenido_efectivo(contenidos_mes, marca_activa)
 
-            # Consultor IA conectado a los resultados de este mes
             hist_actual_marca = cfg.get("historial_anual", {}).get(marca_activa, {})
             _render_consultor_ia_resultados(
                 db, marca_activa, mes_sel, embudo, costos, vendedores, contenidos_mes, score_salud, justif_mercado, hist_actual_marca, es_zae=True
@@ -1768,7 +1777,6 @@ def render():
             st.markdown(f"#### 🔥 Contenido Más Efectivo — {marca_activa} ({mes_sel})")
             _render_grafica_contenido_efectivo(contenidos_mes, marca_activa)
 
-            # Consultor IA conectado a los resultados de este mes
             hist_actual_marca = cfg.get("historial_anual", {}).get(marca_activa, {})
             _render_consultor_ia_resultados(
                 db, marca_activa, mes_sel, embudo, costos, [], contenidos_mes, score_salud, justif_mercado, hist_actual_marca, es_zae=False

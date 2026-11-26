@@ -1,320 +1,216 @@
 # recordatorios.py
 import os
+import re
 import time
 import uuid
-import urllib.parse
-import threading
 import smtplib
-from datetime import datetime, date
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.image import MIMEImage
-import requests
+import threading
+from email.message import EmailMessage
+from datetime import datetime, date, timedelta
 import streamlit as st
-from storage import cargar_datos, guardar_datos
+from storage import (
+    cargar_datos,
+    guardar_datos,
+    listar_todos_los_user_ids,
+    obtener_carpeta_media_usuario,
+)
 
-CARPETA_ADJUNTOS = "adjuntos_recordatorios"
-os.makedirs(CARPETA_ADJUNTOS, exist_ok=True)
+TIPOS_ADJUNTO = [
+    "pdf", "png", "jpg", "jpeg", "webp",
+    "xlsx", "xls", "csv",
+    "docx", "doc", "pptx", "txt",
+    "mp4", "mov", "zip"
+]
 
 
-def _enviar_correo(destinatario, remitente, password_app, asunto, mensaje, ruta_imagen=None):
-    """Envía el recordatorio por correo electrónico con imagen adjunta opcional."""
-    msg = MIMEMultipart()
-    msg["From"] = remitente
-    msg["To"] = destinatario
+def _emails_validos(cadena_correos: str) -> list[str]:
+    if not cadena_correos:
+        return []
+    partes = [c.strip() for c in str(cadena_correos).split(",") if c.strip()]
+    return [c for c in partes if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", c)]
+
+
+def enviar_correo_alerta(remitente: str, password_app: str, destinatarios: list[str], asunto: str, cuerpo_html: str, rutas_adjuntos: list[str] | None = None):
+    if not remitente or not password_app or not destinatarios:
+        raise ValueError("Faltan credenciales SMTP o destinatarios.")
+
+    msg = EmailMessage()
     msg["Subject"] = asunto
+    msg["From"] = remitente
+    msg["To"] = ", ".join(destinatarios)
+    msg.set_content("Tienes un nuevo recordatorio programado desde tu Plataforma Integral de Marketing.")
+    msg.add_alternative(cuerpo_html, subtype="html")
 
-    msg.attach(MIMEText(mensaje, "plain", "utf-8"))
-
-    if ruta_imagen and os.path.exists(ruta_imagen):
-        with open(ruta_imagen, "rb") as f:
-            img_data = f.read()
-        nombre_img = os.path.basename(ruta_imagen)
-        imagen_adjunta = MIMEImage(img_data, name=nombre_img)
-        msg.attach(imagen_adjunta)
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(remitente, password_app)
-        server.send_message(msg)
-
-
-def _enviar_whatsapp_greenapi(api_url, id_instance, api_token, telefono, mensaje, ruta_imagen=None):
-    """Envía mensaje de texto o imagen con descripción a WhatsApp mediante Green-API."""
-    base_url = api_url.rstrip("/")
-    chat_id = f"{telefono.strip()}@c.us"
-
-    if ruta_imagen and os.path.exists(ruta_imagen):
-        url = f"{base_url}/waInstance{id_instance}/sendFileByUpload/{api_token}"
-        nombre_archivo = os.path.basename(ruta_imagen)
-        with open(ruta_imagen, "rb") as f:
-            resp = requests.post(
-                url,
-                data={"chatId": chat_id, "caption": mensaje},
-                files={"file": (nombre_archivo, f, "image/jpeg")},
-                timeout=20
-            )
-    else:
-        url = f"{base_url}/waInstance{id_instance}/sendMessage/{api_token}"
-        resp = requests.post(
-            url,
-            json={"chatId": chat_id, "message": mensaje},
-            timeout=15
-        )
-
-    resp.raise_for_status()
-    data = resp.json()
-    if "idMessage" not in data:
-        raise RuntimeError(f"Respuesta inesperada de Green-API: {data}")
-
-
-def _procesar_recordatorio(rec, config_notif):
-    """Ejecuta el envío según los canales elegidos en el recordatorio."""
-    errores = []
-    marca = rec.get("marca", "General")
-    asunto = f"⏰ Recordatorio Marketing ({marca})"
-    cuerpo = (
-        f"⏰ *Recordatorio — {marca}*\n"
-        f"📅 Programado: {rec['fecha_hora']}\n\n"
-        f"{rec['mensaje']}"
-    )
-
-    if rec.get("por_correo"):
-        remitente = config_notif.get("correo_remitente", "")
-        pass_app = config_notif.get("correo_password", "")
-        destino = config_notif.get("correo_destino", "") or remitente
-        if remitente and pass_app and destino:
-            try:
-                _enviar_correo(
-                    destinatario=destino,
-                    remitente=remitente,
-                    password_app=pass_app,
-                    asunto=asunto,
-                    mensaje=cuerpo,
-                    ruta_imagen=rec.get("ruta_imagen")
+    if rutas_adjuntos:
+        for ruta in rutas_adjuntos:
+            if ruta and os.path.exists(ruta):
+                nombre_limpio = os.path.basename(ruta).split("_", 1)[-1]
+                with open(ruta, "rb") as f:
+                    data = f.read()
+                msg.add_attachment(
+                    data,
+                    maintype="application",
+                    subtype="octet-stream",
+                    filename=nombre_limpio
                 )
-            except Exception as e:
-                errores.append(f"Correo: {e}")
-        else:
-            errores.append("Falta configurar Correo/Contraseña")
 
-    if rec.get("por_whatsapp"):
-        api_url = config_notif.get("ga_api_url", "")
-        id_inst = config_notif.get("ga_id_instance", "")
-        api_tok = config_notif.get("ga_api_token", "")
-        tel = config_notif.get("whats_telefono", "")
-        if api_url and id_inst and api_tok and tel:
-            try:
-                _enviar_whatsapp_greenapi(
-                    api_url=api_url,
-                    id_instance=id_inst,
-                    api_token=api_tok,
-                    telefono=tel,
-                    mensaje=cuerpo,
-                    ruta_imagen=rec.get("ruta_imagen")
-                )
-            except Exception as e:
-                errores.append(f"WhatsApp: {e}")
-        else:
-            errores.append("Falta configurar datos de Green-API")
-
-    return errores
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as smtp:
+        smtp.login(remitente, password_app)
+        smtp.send_message(msg)
 
 
 def _ciclo_segundo_plano():
-    """Hilo silencioso que verifica cada 15 segundos si hay recordatorios por vencer."""
+    """Revisa periódicamente los recordatorios pendientes de TODOS los usuarios registrados."""
     while True:
         try:
-            db_disk = cargar_datos()
-            lista = db_disk.get("recordatorios", [])
-            config = db_disk.get("config_notificaciones", {})
             ahora = datetime.now()
-            hubo_cambios = False
+            user_ids = listar_todos_los_user_ids()
 
-            for rec in lista:
-                if not rec.get("enviado", False):
-                    dt_prog = datetime.strptime(rec["fecha_hora"], "%Y-%m-%d %H:%M")
+            for uid in user_ids:
+                db_u = cargar_datos(user_id=uid)
+                cfg = db_u.get("config_alertas", {})
+                lista = db_u.get("recordatorios", [])
+                if not lista:
+                    continue
+
+                remitente = cfg.get("remitente", "")
+                password = cfg.get("password_app", "")
+                dest_def = cfg.get("destinatarios_default", "")
+                hubo_cambios = False
+
+                for r in lista:
+                    if r.get("enviado"):
+                        continue
+                    try:
+                        dt_prog = datetime.strptime(f"{r['fecha']} {r['hora']}", "%Y-%m-%d %H:%M")
+                    except Exception:
+                        continue
+
                     if ahora >= dt_prog:
-                        errores = _procesar_recordatorio(rec, config)
-                        rec["enviado"] = True
-                        rec["estado"] = "Enviado ✅" if not errores else f"Error ⚠️ ({'; '.join(errores)})"
-                        hubo_cambios = True
+                        dests = _emails_validos(r.get("destinatarios") or dest_def)
+                        if remitente and password and dests:
+                            cuerpo = f"""
+                            <div style="font-family:Segoe UI,Arial,sans-serif;padding:20px;border:1px solid #cbd5e1;border-radius:12px;max-width:600px;">
+                                <h2 style="color:#0f766e;margin-top:0;">⏰ Recordatorio: {r.get('titulo', '')}</h2>
+                                <p><strong>Marca:</strong> {r.get('marca', 'General')}</p>
+                                <p><strong>Programado para:</strong> {r.get('fecha', '')} a las {r.get('hora', '')}</p>
+                                <div style="background:#f8fafc;padding:12px;border-radius:8px;color:#1e293b;">
+                                    {r.get('mensaje', '')}
+                                </div>
+                            </div>
+                            """
+                            try:
+                                enviar_correo_alerta(
+                                    remitente=remitente,
+                                    password_app=password,
+                                    destinatarios=dests,
+                                    asunto=f"⏰ Recordatorio [{r.get('marca', 'MKT')}]: {r.get('titulo', '')}",
+                                    cuerpo_html=cuerpo,
+                                    rutas_adjuntos=r.get("adjuntos", [])
+                                )
+                                r["enviado"] = True
+                                r["estado_envio"] = f"Enviado {ahora.strftime('%d/%m %H:%M')}"
+                            except Exception as e:
+                                r["estado_envio"] = f"Error: {str(e)[:60]}"
+                            hubo_cambios = True
 
-            if hubo_cambios:
-                guardar_datos(db_disk)
+                if hubo_cambios:
+                    guardar_datos(db_u, user_id=uid)
         except Exception:
             pass
-        time.sleep(15)
+        time.sleep(30)
 
 
 @st.cache_resource
 def iniciar_motor_recordatorios():
-    """Inicia una única instancia del reloj en segundo plano."""
     hilo = threading.Thread(target=_ciclo_segundo_plano, daemon=True)
     hilo.start()
     return hilo
 
 
-def render_panel_derecho():
-    """Dibuja el módulo de recordatorios en la columna derecha de la pantalla principal."""
-    iniciar_motor_recordatorios()
-
-    db_actualizado = cargar_datos()
-    st.session_state.db["recordatorios"] = db_actualizado.get("recordatorios", [])
-    if "config_notificaciones" not in st.session_state.db:
-        st.session_state.db["config_notificaciones"] = db_actualizado.get("config_notificaciones", {})
-
-    db = st.session_state.db
+def render_panel_recordatorios(db):
+    """Panel lateral de alertas y recordatorios con adjuntos privados por usuario."""
+    cfg = db.setdefault("config_alertas", {
+        "remitente": "",
+        "password_app": "",
+        "destinatarios_default": ""
+    })
+    recordatorios = db.setdefault("recordatorios", [])
     marca_activa = db.get("marca_activa", "General")
-    config = db["config_notificaciones"]
+    carpeta_adj = obtener_carpeta_media_usuario("adjuntos_recordatorios")
 
-    st.markdown("### ⏰ Recordatorios")
-    st.caption(f"Marca: **{marca_activa}**")
+    pendientes = [r for r in recordatorios if not r.get("enviado")]
+    etiqueta_exp = f"⏰ Alertas y Recordatorios ({len(pendientes)})" if pendientes else "⏰ Alertas y Recordatorios"
 
-    # --- FORMULARIO PARA CREAR RECORDATORIO ---
-    with st.container(border=True):
-        mensaje = st.text_area(
-            "Mensaje del recordatorio:",
-            height=90,
-            placeholder="Ej. Subir reel de promoción o revisar pauta de fin de semana...",
-            key="rec_mensaje_input"
+    with st.expander(etiqueta_exp, expanded=False):
+        with st.popover("⚙️ Configurar Correo Emisor (Gmail)", width="stretch"):
+            st.caption("Usa una **Contraseña de Aplicación** de Google (16 caracteres).")
+            rem_in = st.text_input("Correo Gmail remitente:", value=cfg.get("remitente", ""), key="rec_rem")
+            pwd_in = st.text_input("Contraseña de Aplicación:", value=cfg.get("password_app", ""), type="password", key="rec_pwd")
+            des_in = st.text_input("Destinatario(s) por defecto:", value=cfg.get("destinatarios_default", ""), placeholder="correo1@dom.com, correo2@dom.com", key="rec_des")
+            if st.button("💾 Guardar Config Correo", type="primary", width="stretch", key="rec_save_cfg"):
+                cfg["remitente"] = rem_in.strip()
+                cfg["password_app"] = pwd_in.strip()
+                cfg["destinatarios_default"] = des_in.strip()
+                guardar_datos(db)
+                st.success("Configuración guardada.")
+
+        tit_r = st.text_input("Título de la alerta:", placeholder="Ej. Revisar presupuesto semanal", key="rec_tit")
+        c_f, c_h = st.columns(2)
+        fec_r = c_f.date_input("Fecha:", value=date.today(), key="rec_fec")
+        hor_r = c_h.time_input("Hora:", value=(datetime.now() + timedelta(minutes=15)).time(), key="rec_hor")
+        msg_r = st.text_area("Mensaje / Detalle:", height=65, placeholder="Notas o instrucciones...", key="rec_msg")
+        dest_r = st.text_input("Enviar a (opcional, usa defecto):", placeholder="otro@correo.com", key="rec_dest_custom")
+
+        archivos_r = st.file_uploader(
+            "Adjuntar archivos (opcional):",
+            type=TIPOS_ADJUNTO,
+            accept_multiple_files=True,
+            key="rec_files"
         )
 
-        img_ref = st.file_uploader(
-            "Imagen de referencia (opcional):",
-            type=["png", "jpg", "jpeg"],
-            key="rec_img_input"
-        )
-
-        c_fecha, c_hora = st.columns(2)
-        fecha_sel = c_fecha.date_input("Día:", value=date.today(), key="rec_fecha_input")
-        hora_sel = c_hora.time_input("Hora:", key="rec_hora_input")
-
-        st.write("**¿Por dónde avisarte?**")
-        c_chk1, c_chk2 = st.columns(2)
-        enviar_whats = c_chk1.checkbox("WhatsApp", value=True, key="rec_chk_wa")
-        enviar_mail = c_chk2.checkbox("Correo", value=False, key="rec_chk_mail")
-
-        if st.button("🔔 Programar Recordatorio", type="primary", width="stretch"):
-            if not mensaje.strip():
-                st.warning("Escribe el mensaje del recordatorio.")
-            elif not enviar_whats and not enviar_mail:
-                st.warning("Selecciona al menos un medio (WhatsApp o Correo).")
+        if st.button("➕ Programar Recordatorio", type="primary", width="stretch", key="rec_add"):
+            if not tit_r.strip():
+                st.warning("Escribe un título para el recordatorio.")
             else:
-                ruta_guardada = None
-                if img_ref is not None:
-                    ext = os.path.splitext(img_ref.name)[1]
-                    nombre_unico = f"{uuid.uuid4().hex}{ext}"
-                    ruta_guardada = os.path.join(CARPETA_ADJUNTOS, nombre_unico)
-                    with open(ruta_guardada, "wb") as f:
-                        f.write(img_ref.getbuffer())
+                rutas_guardadas = []
+                if archivos_r:
+                    for f_up in archivos_r:
+                        nom_u = f"{uuid.uuid4().hex[:8]}_{f_up.name}"
+                        ruta_f = os.path.join(carpeta_adj, nom_u)
+                        with open(ruta_f, "wb") as f_out:
+                            f_out.write(f_up.getbuffer())
+                        rutas_guardadas.append(ruta_f)
 
-                fecha_hora_str = f"{fecha_sel.strftime('%Y-%m-%d')} {hora_sel.strftime('%H:%M')}"
-
-                nuevo_rec = {
+                recordatorios.append({
                     "id": uuid.uuid4().hex[:8],
                     "marca": marca_activa,
-                    "mensaje": mensaje.strip(),
-                    "fecha_hora": fecha_hora_str,
-                    "por_whatsapp": enviar_whats,
-                    "por_correo": enviar_mail,
-                    "ruta_imagen": ruta_guardada,
+                    "titulo": tit_r.strip(),
+                    "fecha": fec_r.strftime("%Y-%m-%d"),
+                    "hora": hor_r.strftime("%H:%M"),
+                    "mensaje": msg_r.strip(),
+                    "destinatarios": dest_r.strip(),
+                    "adjuntos": rutas_guardadas,
                     "enviado": False,
-                    "estado": "Pendiente ⏳"
-                }
-
-                db.setdefault("recordatorios", []).append(nuevo_rec)
+                    "estado_envio": "Pendiente"
+                })
                 guardar_datos(db)
-                st.success(f"Programado para {fecha_hora_str}")
+                st.success("Alerta programada.")
                 st.rerun()
 
-    # --- CONFIGURACIÓN DE CREDENCIALES DE ENVÍO ---
-    with st.expander("⚙️ Configurar WhatsApp / Correo"):
-        st.caption("**1. WhatsApp Automático (Green-API)**")
-        ga_url = st.text_input(
-            "apiUrl:",
-            value=config.get("ga_api_url", "https://7107.api.greenapi.com"),
-            placeholder="https://7107.api.greenapi.com"
-        )
-        ga_id = st.text_input(
-            "idInstance:",
-            value=config.get("ga_id_instance", ""),
-            placeholder="Ej. 710722805509"
-        )
-        ga_tok = st.text_input(
-            "apiTokenInstance:",
-            value=config.get("ga_api_token", ""),
-            type="password"
-        )
-        wa_tel = st.text_input(
-            "Tu número con lada (ej. 5215612472263):",
-            value=config.get("whats_telefono", "")
-        )
-
-        st.markdown("---")
-        st.caption("**2. Correo (Gmail SMTP)**")
-        mail_rem = st.text_input(
-            "Tu Gmail:",
-            value=config.get("correo_remitente", ""),
-            placeholder="tucorreo@gmail.com"
-        )
-        mail_pass = st.text_input(
-            "Contraseña de aplicación (16 letras):",
-            value=config.get("correo_password", ""),
-            type="password"
-        )
-        mail_dest = st.text_input(
-            "Correo destino (opcional si es el mismo):",
-            value=config.get("correo_destino", ""),
-            placeholder="destino@correo.com"
-        )
-
-        if st.button("💾 Guardar Configuración", width="stretch"):
-            db["config_notificaciones"] = {
-                "ga_api_url": ga_url.strip(),
-                "ga_id_instance": ga_id.strip(),
-                "ga_api_token": ga_tok.strip(),
-                "whats_telefono": wa_tel.strip(),
-                "correo_remitente": mail_rem.strip(),
-                "correo_password": mail_pass.strip(),
-                "correo_destino": mail_dest.strip()
-            }
-            guardar_datos(db)
-            st.success("Configuración guardada.")
-
-    # --- LISTA DE RECORDATORIOS ---
-    st.markdown("---")
-    st.markdown("**📋 Agenda de Recordatorios**")
-    recordatorios = db.get("recordatorios", [])
-
-    if not recordatorios:
-        st.caption("No tienes recordatorios programados.")
-    else:
-        for i, rec in enumerate(reversed(recordatorios)):
-            idx_real = len(recordatorios) - 1 - i
-            with st.container(border=True):
-                st.caption(f"📅 **{rec['fecha_hora']}** | 🏢 {rec['marca']}")
-                st.write(rec["mensaje"])
-                if rec.get("ruta_imagen"):
-                    st.caption("🖼️ Con imagen adjunta")
-                
-                medios = []
-                if rec.get("por_whatsapp"):
-                    medios.append("WhatsApp")
-                if rec.get("por_correo"):
-                    medios.append("Correo")
-                
-                st.caption(f"Vía: {' + '.join(medios)} • **{rec.get('estado', 'Pendiente')}**")
-
-                b1, b2 = st.columns(2)
-                texto_wa = urllib.parse.quote(f"Recordatorio ({rec['marca']}): {rec['mensaje']}")
-                b1.link_button("📲 Abrir WA", f"https://wa.me/?text={texto_wa}", width="stretch")
-                
-                if b2.button("🗑️ Borrar", key=f"del_rec_{rec['id']}", width="stretch"):
-                    if rec.get("ruta_imagen") and os.path.exists(rec["ruta_imagen"]):
-                        try:
-                            os.remove(rec["ruta_imagen"])
-                        except Exception:
-                            pass
-                    db["recordatorios"].pop(idx_real)
+        if recordatorios:
+            st.markdown("---")
+            for idx, r in enumerate(reversed(recordatorios[-6:])):
+                icono = "✅" if r.get("enviado") else "⏳"
+                c1, c2 = st.columns([4, 1])
+                c1.caption(f"{icono} **{r['titulo']}**\n📅 {r['fecha']} {r['hora']} ({r.get('marca', '')})")
+                if c2.button("🗑️", key=f"del_rec_{r['id']}"):
+                    for adj_p in r.get("adjuntos", []):
+                        if adj_p and os.path.exists(adj_p):
+                            try:
+                                os.remove(adj_p)
+                            except Exception:
+                                pass
+                    db["recordatorios"] = [x for x in db["recordatorios"] if x["id"] != r["id"]]
                     guardar_datos(db)
                     st.rerun()

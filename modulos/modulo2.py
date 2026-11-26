@@ -178,7 +178,7 @@ def render():
         pm_copy_guardado = (datos_marca.get("prompt_maestro_copy", "") or prompt_copy_edit).strip()
 
         if not api_key:
-            st.warning("Primero guarda tu Token de Gemini en la barra lateral izquierda.")
+            st.warning("⚠️ El servicio de Inteligencia Artificial no tiene configurada la clave GEMINI_API_KEY en el servidor.")
         elif cant_prompts_img == 0 and cant_copys == 0:
             st.warning("Indica al menos 1 prompt de imagen o 1 copy para generar.")
         elif cant_prompts_img > 0 and not pm_img_guardado:
@@ -350,7 +350,7 @@ def render():
             if st.button("🎬 Generar Prompt de Video", type="primary", key=f"btn_gen_vid_{marca}"):
                 api_key = db.get("gemini_api_key")
                 if not api_key:
-                    st.warning("Guarda tu Token de Gemini en la barra lateral izquierda para analizar la imagen.")
+                    st.warning("⚠️ El servicio de Inteligencia Artificial no tiene configurada la clave GEMINI_API_KEY en el servidor.")
                 else:
                     with st.spinner("Analizando composición visual y diseñando dirección de cámara..."):
                         try:

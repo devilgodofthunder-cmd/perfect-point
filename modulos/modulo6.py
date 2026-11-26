@@ -58,6 +58,20 @@ MESES_NUM_A_ES = {
 }
 
 
+def _obtener_api_key(db):
+    """Obtiene la API Key de Gemini desde entorno, secrets o sesión."""
+    key_env = os.getenv("GEMINI_API_KEY", "").strip()
+    if key_env:
+        return key_env
+    try:
+        key_sec = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+        if key_sec:
+            return key_sec
+    except Exception:
+        pass
+    return str(db.get("gemini_api_key", "")).strip()
+
+
 def _obtener_icono_archivo(nombre_archivo):
     """Devuelve un ícono descriptivo según la extensión del archivo."""
     ext = os.path.splitext(str(nombre_archivo).lower())[1]
@@ -548,6 +562,7 @@ def _obtener_publicaciones_candidatas(db, marca_activa):
 def render():
     db = st.session_state.db
     marca_activa = db.get("marca_activa", "General")
+    api_key = _obtener_api_key(db)
 
     st.markdown("""
     <style>
@@ -717,7 +732,6 @@ def render():
         st.markdown(f"### ✨ Top 5 Publicaciones Más Llamativas y Creativas — {marca_activa}")
         st.caption("La IA analiza el calendario de publicaciones y selecciona únicamente las **5 piezas más atractivas, creativas e ideales** para tu portafolio.")
 
-        api_key = db.get("gemini_api_key", "")
         candidatas = _obtener_publicaciones_candidatas(db, marca_activa)
 
         col_cur1, col_cur2 = st.columns([2, 1])
@@ -809,7 +823,6 @@ def render():
     # =========================================================================
     with sub3:
         st.markdown(f"### 🎪 Historial de Eventos y Oportunidades Comerciales — {marca_activa}")
-        api_key = db.get("gemini_api_key", "")
 
         eventos_marca = [e for e in db.get("eventos", []) if marca_activa in e.get("marcas", [])]
         if eventos_marca:
@@ -833,16 +846,16 @@ def render():
 
         if st.button(f"🚀 Generar Ideas de Eventos y Prospectos en Frío para {marca_activa}", type="primary", key=f"btn_prosp_{marca_activa}"):
             if not api_key:
-                st.warning("Ingresa tu Token IA (Gemini) en la barra lateral izquierda para generar prospectos y eventos.")
+                st.warning("El servicio de Inteligencia Artificial no está configurado en el servidor (`GEMINI_API_KEY`).")
             else:
                 try:
                     with st.spinner("Investigando oportunidades de eventos y empresas prospecto en CDMX / Edomex..."):
                         prompt_b2b = f"""
                         Actúa como Director Comercial y de Eventos B2B en México para la marca: **{marca_activa}**.
                         Contexto del negocio:
-                        - Zona Auto Estrena / TVS Venta de Carpio: Venta y financiamiento de motocicletas y vehículos en CDMX y Edomex.
-                        - Banda Biker: GPS, rastreo satelital, corte de corriente y accesorios para motos y flotillas.
-                        - Lead Zone Pro: Agencia de marketing digital, generación de leads y pauta Meta Ads para negocios.
+- Zona Auto Estrena / TVS Venta de Carpio: Venta y financiamiento de motocicletas y vehículos en CDMX y Edomex.
+- Banda Biker: GPS, rastreo satelital, corte de corriente y accesorios para motos y flotillas.
+- Lead Zone Pro: Agencia de marketing digital, generación de leads y pauta Meta Ads para negocios.
                         Zona de interés: {zona_prosp}.
 
                         Genera dos secciones estructuradas:
@@ -967,7 +980,6 @@ def render():
             st.info(f"No hay expedientes archivados en esta vista para **{marca_activa}**.")
         else:
             for it in reversed(items_boveda):
-                # Compatibilidad con registros anteriores de 1 solo archivo/enlace
                 archivos_item = list(it.get("archivos", []))
                 if not archivos_item and it.get("archivo"):
                     archivos_item = [{
@@ -999,14 +1011,12 @@ def render():
                     if it.get("notas"):
                         st.write(it["notas"])
 
-                    # 1. Mostrar enlaces de Google Sheets / Google Docs / Drive / Canva
                     if enlaces_item:
                         cols_links = st.columns(min(len(enlaces_item), 3))
                         for idx_l, url_ext in enumerate(enlaces_item):
                             lbl_btn = _etiqueta_enlace_externo(url_ext)
                             cols_links[idx_l % 3].link_button(lbl_btn, url_ext, width="stretch")
 
-                    # 2. Mostrar archivos adjuntos (vista previa multimedia + botones de descarga para Excel/Word/PDF)
                     if archivos_item:
                         cols_files = st.columns(min(len(archivos_item), 3))
                         for idx_f, a_info in enumerate(archivos_item):

@@ -3,3 +3,7 @@
 streamlit
 google-genai
 pandas
+pillow
+openpyxl
+requests
+plotly

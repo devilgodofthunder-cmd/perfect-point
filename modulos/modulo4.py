@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from storage import cargar_datos, guardar_datos
+from storage import guardar_datos
 
 ETAPAS_EVENTO = [
     "📝 Borrador (Para Junta)",
