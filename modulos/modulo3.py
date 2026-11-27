@@ -8,6 +8,7 @@ import requests
 import pandas as pd
 import streamlit as st
 from datetime import datetime, date
+from urllib.parse import urlparse, parse_qs
 from storage import (
     cargar_datos,
     guardar_datos,
@@ -29,6 +30,57 @@ def _es_video(ruta_o_url: str) -> bool:
         return False
     limpio = str(ruta_o_url).split("?")[0].lower()
     return limpio.endswith(EXTENSIONES_VIDEO)
+
+
+def _convertir_url_sheet_a_csv(url: str) -> str:
+    """Convierte una URL de Google Sheets a enlace de exportación CSV cuando sea posible."""
+    if not url:
+        return ""
+    u = str(url).strip()
+    if "export?format=csv" in u or "tqx=out:csv" in u:
+        return u
+
+    match_id = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", u)
+    if not match_id:
+        return u
+
+    sheet_id = match_id.group(1)
+    gid = "0"
+
+    parsed = urlparse(u)
+    qs = parse_qs(parsed.query)
+    if "gid" in qs and qs["gid"]:
+        gid = qs["gid"][0]
+    else:
+        match_gid = re.search(r"gid=([0-9]+)", u)
+        if match_gid:
+            gid = match_gid.group(1)
+
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+
+
+def _obtener_bytes_imagen(ruta_o_url: str):
+    """Devuelve los bytes de una imagen desde ruta local o URL pública."""
+    if not ruta_o_url:
+        return None
+    ref = str(ruta_o_url).strip()
+
+    if os.path.exists(ref) and os.path.isfile(ref):
+        try:
+            with open(ref, "rb") as f_img:
+                return f_img.read()
+        except Exception:
+            return None
+
+    if _es_url_publica(ref):
+        try:
+            resp = requests.get(ref, timeout=15)
+            if resp.status_code == 200 and resp.content:
+                return resp.content
+        except Exception:
+            return None
+
+    return None
 
 
 def _parsear_fecha_hora(texto_horario: str):
